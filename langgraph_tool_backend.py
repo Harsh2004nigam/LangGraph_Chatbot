@@ -1,8 +1,5 @@
 
 
-## ✅ Full Updated Backend (ready to paste)
-
-
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
@@ -93,15 +90,16 @@ def chat_node(state: ChatState):
     messages = state["messages"]
 
     system_instruction = (
-        "You are an AI assistant that can use tools.\n"
+        "You are an intelligent AI assistant that can use tools.\n"
         "Available tools:\n"
-        "1. search(query: str)\n"
-        "2. calculator(first_num: float, second_num: float, operation: str)\n"
-        "3. get_stock_price(symbol: str)\n\n"
-        "If a user query requires a tool, respond ONLY with JSON in this format:\n"
+        "- search(query: str)\n"
+        "- calculator(first_num: float, second_num: float, operation: str)\n"
+        "- get_stock_price(symbol: str)\n\n"
+        "If a query *requires* a tool, respond ONLY with valid JSON like:\n"
         '{"tool": "tool_name", "args": {"arg1": "value", "arg2": "value"}}\n'
-        "Do NOT add any extra text outside JSON. "
-        "If no tool is needed, just answer normally."
+        "Otherwise, answer normally in plain text.\n"
+        "Never include explanations, reasoning, or markdown inside tool JSON.\n"
+        "Keep your answers conversational, clear, and human-friendly."
     )
 
     response = model.invoke([HumanMessage(content=system_instruction)] + messages)
@@ -110,33 +108,46 @@ def chat_node(state: ChatState):
     # Try to extract tool call
     tool_request = extract_json_from_text(text)
 
-    # -------------------  TOOL EXECUTION UI STATUS  -------------------
+    # ------------------- TOOL EXECUTION -------------------
     if tool_request and "tool" in tool_request:
         tool_name = tool_request.get("tool")
         args = tool_request.get("args", {})
 
         if tool_name in TOOLS:
-            # Send an intermediate status message (for frontend)
-            status_message = AIMessage(content=f"🔧 Using **{tool_name}** ...")
-            
-            # Actually execute the tool
+            # Step 1: Send "Using tool..." status to frontend
+            status_message = AIMessage(content=f"🔧 Using **{tool_name}**...")
+
+            # Step 2: Execute tool
             tool_fn = TOOLS[tool_name]
             result = tool_fn.invoke(args)
-            
-            # Simulate processing delay for UI realism
-            time.sleep(1.5)
-            
-            # Then send final answer
-            follow_up = (
-                f"The tool '{tool_name}' returned this result: {result}. "
-                f"Now give a short, clear final answer to the user."
-            )
-            final_response = model.invoke([HumanMessage(content=follow_up)])
-            
-            return {"messages": [status_message, AIMessage(content=final_response.content)]}
 
-    # No tool used
-    return {"messages": [response]}
+            # Step 3: Handle result and possible errors
+            if not result or "error" in result:
+                error_msg = result.get("error", "Tool failed to return a valid response.")
+                return {
+                    "messages": [
+                        status_message,
+                        AIMessage(content=f"⚠️ The {tool_name} tool encountered an error: {error_msg}. Please recheck your input.")
+                    ]
+                }
+
+            # Step 4: Ask LLM to summarize the tool result nicely
+            time.sleep(1)
+            follow_up_prompt = (
+                f"The tool '{tool_name}' returned this result:\n{result}\n\n"
+                "Now, write a short, clear, and natural final answer for the user. "
+                "Do not include JSON or tool names, just explain the result nicely."
+            )
+            final_response = model.invoke([HumanMessage(content=follow_up_prompt)])
+            final_answer = final_response.content.strip()
+
+            return {"messages": [status_message, AIMessage(content=final_answer)]}
+
+    # ------------------- NO TOOL -------------------
+    if text.startswith("{") and text.endswith("}"):
+        return {"messages": [AIMessage(content="Sorry, I couldn’t process that request.")]}
+    
+    return {"messages": [AIMessage(content=text)]}
 
 # ------------------- 6. Checkpointer -------------------
 conn = sqlite3.connect(database="chatbot.db", check_same_thread=False)
